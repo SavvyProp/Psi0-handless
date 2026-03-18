@@ -53,3 +53,4 @@ src/gr00t/.venv/
 props/
 textures/
 test.py
+*.npy

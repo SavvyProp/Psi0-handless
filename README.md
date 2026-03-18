@@ -81,6 +81,7 @@ Set up the $\Psi_0$ environment:
 uv venv .venv-psi --python 3.10
 source .venv-psi/bin/activate
 GIT_LFS_SKIP_SMUDGE=1 uv sync --all-groups --index-strategy unsafe-best-match --active
+uv pip install flash_attn==2.7.4.post1 --no-build-isolation
 ```
 
 Test installation, a version number should be displayed.
@@ -373,6 +374,20 @@ scripts/predownload_qwen3vl.py
 ```
 
 Pre-train on the [EgoDex dataset](https://github.com/apple/ml-egodex)
+
+Pre-compute `48 DoF EgoDex action`:
+
+> We re-use the pre-process code from [H-RDT EgoDex Pre-Processing](https://github.com/HongzheBi/H_RDT?tab=readme-ov-file#data-preprocessing).
+> 1. Change the paths in `src/h_rdt/datasets/pretrain/setup_pretrain.sh`.
+> 2. Tweak the `NUM_PROCESSES` if on a powerful server, i tried max 64.
+> 3. set `FORCE_OVERWRITE=True` if the processing script is disrupted.
+
+```
+source src/h_rdt/datasets/pretrain/setup_pretrain.sh
+source .venv-psi/bin/activate
+bash src/h_rdt/datasets/pretrain/run_pretrain_pipeline.sh
+```
+
 ```
 bash scripts/train/psi0/pretrain-egodex-psi0-fast.sh 
 ```
