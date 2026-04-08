@@ -4,9 +4,8 @@
 # Set your paths here
 
 # Required paths - modify these according to your environment
-export EGODEX_DATA_ROOT="/lustre/fs12/portfolios/nvr/projects/nvr_av_foundations/datasets/ego-dex"
-# export EGODEX_DATA_ROOT="/path/to/raw/ego-dex"
-export T5_MODEL_PATH="/hfm/cache/checkpoints/t5-v1_1-xxl"
+export EGODEX_DATA_ROOT="/path/to/raw/ego-dex"
+export T5_MODEL_PATH="/path/to/checkpoints/t5-v1_1-xxl"
 
 # Project structure (auto-detected)
 export HRDT_PROJECT_ROOT="$(pwd)/src/h_rdt"
