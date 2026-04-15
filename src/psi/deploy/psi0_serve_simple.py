@@ -100,6 +100,11 @@ class Server:
             transforms = [self.model_transform.resize(), self.model_transform.center_crop()]
             t = v2.Compose(transforms)
 
+            # Overwrite hand states
+            np_states = state_dict["states"]
+            np_states[0:14] = np.zeros(14, dtype=np.float32) # zero out hand states
+            state_dict["states"] = np_states
+
             states = torch.from_numpy(state_dict["states"].copy())
             # self.repack_transform.to_psi0_state_format(
             #     torch.from_numpy(state_dict["proprio_joint_positions"].copy()),

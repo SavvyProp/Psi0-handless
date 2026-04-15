@@ -203,12 +203,15 @@ class RobotTaskmaster:
                     (14,), dtype=np.float64, buffer=self.hand_shm.buf
                 )
 
-                self.hand_ctrl = Dex3_1_Controller(
-                    self.hand_shm_array,
-                    self.dual_hand_data_lock,
-                    dual_hand_state_array,
-                    dual_hand_action_array,
-                )
+                try:
+                    self.hand_ctrl = Dex3_1_Controller(
+                        self.hand_shm_array,
+                        self.dual_hand_data_lock,
+                        dual_hand_state_array,
+                        dual_hand_action_array,
+                    )
+                except:
+                    self.hand_ctrl = None
             else:
                 logger.error("unknown robot")
                 exit(-1)
@@ -263,7 +266,8 @@ class RobotTaskmaster:
             left_hand_angles = [1.7 - left_qpos[i] for i in [4, 6, 2, 0]]
             left_hand_angles.append(1.2 - left_qpos[8])
             left_hand_angles.append(0.5 - left_qpos[9])
-            self.hand_ctrl.ctrl_dual_hand(right_hand_angles, left_hand_angles)
+            if self.hand_ctrl is not None:
+                self.hand_ctrl.ctrl_dual_hand(right_hand_angles, left_hand_angles)
             # self.left_hand_array[:] = left_qpos
             # self.right_hand_array[:] = right_qpos
             # self.hand_ctrl.ctrl_dual_hand(right_qpos, left_qpos)
@@ -449,11 +453,16 @@ class RobotTaskmaster:
         # print("self.yaw:", self.yaw)
 
         # print("in_place_stand_flag:", self._in_place_stand_flag)
-
-        handstate = self.hand_ctrl.get_current_dual_hand_q()
+        if self.hand_ctrl is not None:
+            handstate = self.hand_ctrl.get_current_dual_hand_q()
+        else:
+            handstate = np.zeros(14, dtype=np.float64)
         self.handstate = handstate
         if self.robot == "g1":
-            hand_press_state = self.hand_ctrl.get_current_dual_hand_pressure()
+            if self.hand_ctrl is not None:
+                hand_press_state = self.hand_ctrl.get_current_dual_hand_pressure()
+            else:
+                hand_press_state = np.zeros((18, 12), dtype=np.float64)
             robot_sizes = G1_sizes
 
         imustate = self.body_ctrl.get_imu_data()
@@ -767,7 +776,8 @@ class RobotTaskmaster:
 
         logger.debug("Master: shutting down h1 contorllers...")
         self.body_ctrl.shutdown()
-        self.hand_ctrl.shutdown()
+        if self.hand_ctrl is not None:
+            self.hand_ctrl.shutdown()
         logger.debug("Master: h1 controlleers shutdown")
         logger.info("Master: Stopping all threads ended!")
 
@@ -778,7 +788,8 @@ class RobotTaskmaster:
         logger.info("Master: Clearing stop event...")
         # self.kill_event.clear()  # TODO: create a new one?
 
-        self.hand_ctrl.reset()
+        if self.hand_ctrl is not None:
+            self.hand_ctrl.reset()
         self.body_ctrl.reset()
         self.first = True
         self.running = False

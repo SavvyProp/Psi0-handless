@@ -296,7 +296,7 @@ class Server:
         for cam_idx, img_key in enumerate(self.launch_cfg.data.transform.repack.image_keys):
             imgs[f"cam{cam_idx}"] = Image.fromarray(np.clip(image_dict[img_key], 0, 255).astype(np.uint8))
         
-        hand_joints = state_dict["hand_joints"].copy() # shape (14,)
+        hand_joints = state_dict["hand_joints"].copy() * 0.0 # shape (14,) zero hand joints
         arm_joints = state_dict["arm_joints"].copy() # shape (14,)
         tmp_torso_rpy = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         tmp_torso_height = np.array([0.75], dtype=np.float32)
