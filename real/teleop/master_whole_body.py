@@ -613,6 +613,8 @@ class RobotTaskmaster:
                         last_pd_target = pd_target
                     else:
                         continue
+                    with self.dual_hand_data_lock:
+                        self.hand_shm_array[:] = self.hand_shm_array[:] * 0.0
 
                     end_time = time.time()
 
@@ -856,7 +858,7 @@ class RobotTaskmaster:
         pd_tauff[15:] = self.get_tauer(np.array(arm_poseList))
 
         with self.dual_hand_data_lock:
-            self.hand_shm_array[:] = hand_poseList
+            self.hand_shm_array[:] = hand_poseList * 0.0
 
         self.body_ctrl.ctrl_whole_body(pd_target[15:], pd_tauff[15:], pd_target[:15], pd_tauff[:15])
 

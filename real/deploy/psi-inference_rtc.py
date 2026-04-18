@@ -24,6 +24,49 @@ json_numpy.patch()
 from base64 import b64encode, b64decode
 from numpy.lib.format import dtype_to_descr, descr_to_dtype
 
+import time
+from pathlib import Path
+
+import numpy as np
+
+
+class BinaryVectorLogger:
+    def __init__(self, path: str, dim: int, dtype=np.float32, batch_rows: int = 256):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.dim = dim
+        self.row_dtype = np.dtype([
+            ("t_ns", np.int64),
+            ("x", dtype, (dim,)),
+        ])
+        self.buffer = np.empty(batch_rows, dtype=self.row_dtype)
+        self.count = 0
+        self.f = open(self.path, "ab", buffering=0)
+
+    def log(self, vec, t_ns: int | None = None):
+        vec = np.asarray(vec, dtype=self.row_dtype["x"].base)
+        if vec.shape != (self.dim,):
+            raise ValueError(f"expected shape {(self.dim,)}, got {vec.shape}")
+
+        i = self.count
+        self.buffer[i]["t_ns"] = time.time_ns() if t_ns is None else t_ns
+        self.buffer[i]["x"] = vec
+        self.count += 1
+
+        if self.count == len(self.buffer):
+            self.flush()
+
+    def flush(self):
+        if self.count:
+            self.f.write(self.buffer[:self.count].tobytes())
+            self.count = 0
+
+    def close(self):
+        self.flush()
+        self.f.close()
+
+
 class RSCamera:
     def __init__(self):
         self.context = zmq.Context()
@@ -264,12 +307,16 @@ class RTCWebSocketClient:
             self._ws.close()
 
 
-def main(server_url):
+def main(server_url, zero_action):
     master.reset_yaw_offset = True
+
+    pd_logger = BinaryVectorLogger("logs/pd_targets.bin", dim=58)
+    action_logger = BinaryVectorLogger("logs/raw_actions.bin", dim=36)
+    low_obs_logger = BinaryVectorLogger("logs/ik_extra_hist.bin", dim=1043)
 
     _last_target_yaw = None
 
-    def apply_action_from_buffer(last_pd_target):
+    def apply_action_from_buffer(last_pd_target, keep_standing = zero_action):
         current_lr_arm_q, current_lr_arm_dq = master.get_robot_data()
 
         have_vla = False
@@ -293,6 +340,7 @@ def main(server_url):
                 vyaw = action[34]
                 # dyaw = action[35]
                 target_yaw = action[35]
+                action_logger.log(action[:36])
 
                 vx = 0.6 if vx > 0.25 else 0
                 vy = 0 if abs(vy) < 0.3 else 0.5 * (1 if vy > 0 else -1)
@@ -300,7 +348,7 @@ def main(server_url):
 
                 rpyh   = action[28:32]
                 arm_cmd = action[14:28]
-                hand_cmd = action[:14]
+                hand_cmd = action[:14] * 0.0
 
                 master.torso_roll   = rpyh[0]
                 master.torso_pitch  = rpyh[1]
@@ -339,7 +387,19 @@ def main(server_url):
             master.vy = 0
             master.vyaw = master.prev_vyaw
             master.target_yaw = master.prev_target_yaw
-        
+
+        if keep_standing:
+            master.torso_roll = 0.0
+            master.torso_pitch = 0.0
+            master.torso_yaw = 0.0
+            master.torso_height = 0.75
+
+            master.vx = 0.0
+            master.vy = 0.0
+            master.vyaw = 0.0
+            master.target_yaw = 0.0
+
+            arm_cmd = None
 
 
         master.get_ik_observation(record=False)
@@ -369,6 +429,8 @@ def main(server_url):
             with master.dual_hand_data_lock:
                 master.hand_shm_array[:] = hand_cmd
 
+        pd_logger.log(np.concatenate([pd_target, pd_tauff]))
+        low_obs_logger.log(master.observation)
         master.body_ctrl.ctrl_whole_body(
             pd_target[15:], pd_tauff[15:], pd_target[:15], pd_tauff[:15]
         )
@@ -430,6 +492,9 @@ def main(server_url):
     finally:
         shared_data["end_event"].set()
         master.stop()
+        low_obs_logger.close()
+        pd_logger.close()
+        action_logger.close()
         print("[MAIN] Shutdown complete.")
 
 if __name__ == "__main__":
@@ -438,7 +503,8 @@ if __name__ == "__main__":
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=8014)
     parser.add_argument("--task", type=str, default=TASK_INSTRUCTION)
+    parser.add_argument("--zero_action", type=bool, default=True)
     args = parser.parse_args()
     TASK_INSTRUCTION = args.task
     server_url = f"ws://{args.host}:{args.port}/ws"
-    main(server_url)
+    main(server_url, args.zero_action)
