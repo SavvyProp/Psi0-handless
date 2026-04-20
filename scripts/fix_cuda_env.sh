@@ -46,6 +46,32 @@ _fix_cuda_prepend_path() {
   export "${var_name}=${updated_value}"
 }
 
+_fix_cuda_remove_path() {
+  local var_name="$1"
+  local old_path="$2"
+  local current_value="${!var_name:-}"
+  local rebuilt_parts=()
+  local rebuilt_value=""
+
+  if [[ -z "$current_value" || -z "$old_path" ]]; then
+    return 0
+  fi
+
+  IFS=':' read -r -a _fix_cuda_parts <<< "$current_value"
+  for _fix_cuda_part in "${_fix_cuda_parts[@]}"; do
+    if [[ -n "$_fix_cuda_part" && "$_fix_cuda_part" != "$old_path" ]]; then
+      rebuilt_parts+=("$_fix_cuda_part")
+    fi
+  done
+
+  if [[ "${#rebuilt_parts[@]}" -gt 0 ]]; then
+    rebuilt_value="$(IFS=:; printf '%s' "${rebuilt_parts[*]}")"
+    export "${var_name}=${rebuilt_value}"
+  else
+    unset "$var_name"
+  fi
+}
+
 _fix_cuda_print_header() {
   echo "== CUDA driver visibility helper =="
 }
@@ -67,35 +93,88 @@ declare -a _fix_cuda_candidate_dirs=(
 )
 
 declare -a _fix_cuda_added_dirs=()
+declare -a _fix_cuda_linked_libs=()
 _fix_cuda_libcuda_dir=""
 _fix_cuda_nvml_dir=""
+_fix_cuda_shim_dir="${TMPDIR:-/tmp}/psi-host-cuda-libs-${USER:-unknown}"
+
+_fix_cuda_find_lib() {
+  local lib_name="$1"
+  local candidate=""
+  local candidate_dir=""
+
+  for candidate_dir in "${_fix_cuda_candidate_dirs[@]}"; do
+    [[ -d "$candidate_dir" ]] || continue
+
+    if [[ -e "$candidate_dir/$lib_name" ]]; then
+      printf '%s\n' "$candidate_dir/$lib_name"
+      return 0
+    fi
+
+    for candidate in "$candidate_dir"/"$lib_name".*; do
+      [[ -e "$candidate" ]] || continue
+      printf '%s\n' "$candidate"
+      return 0
+    done
+  done
+
+  return 1
+}
+
+_fix_cuda_realpath() {
+  local path="$1"
+
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+_fix_cuda_link_lib() {
+  local lib_name="$1"
+  local lib_path=""
+  local lib_realpath=""
+
+  lib_path="$(_fix_cuda_find_lib "$lib_name" || true)"
+  if [[ -z "$lib_path" ]]; then
+    return 1
+  fi
+
+  lib_realpath="$(_fix_cuda_realpath "$lib_path")"
+  ln -sfn "$lib_realpath" "$_fix_cuda_shim_dir/$lib_name"
+  _fix_cuda_linked_libs+=("$lib_name -> $lib_realpath")
+  return 0
+}
+
+mkdir -p "$_fix_cuda_shim_dir"
 
 for _fix_cuda_dir in "${_fix_cuda_candidate_dirs[@]}"; do
-  [[ -d "$_fix_cuda_dir" ]] || continue
-
-  _fix_cuda_add_dir=0
-  if [[ -e "$_fix_cuda_dir/libcuda.so.1" ]]; then
-    [[ -n "$_fix_cuda_libcuda_dir" ]] || _fix_cuda_libcuda_dir="$_fix_cuda_dir"
-    _fix_cuda_add_dir=1
-  fi
-  if [[ -e "$_fix_cuda_dir/libnvidia-ml.so.1" ]]; then
-    [[ -n "$_fix_cuda_nvml_dir" ]] || _fix_cuda_nvml_dir="$_fix_cuda_dir"
-    _fix_cuda_add_dir=1
-  fi
-
-  if [[ "$_fix_cuda_add_dir" -eq 1 ]]; then
-    _fix_cuda_prepend_path LD_LIBRARY_PATH "$_fix_cuda_dir"
-    _fix_cuda_added_dirs+=("$_fix_cuda_dir")
-  fi
+  _fix_cuda_remove_path LD_LIBRARY_PATH "$_fix_cuda_dir"
 done
 
+_fix_cuda_link_lib libcuda.so.1 && _fix_cuda_libcuda_dir="$_fix_cuda_shim_dir"
+_fix_cuda_link_lib libnvidia-ml.so.1 && _fix_cuda_nvml_dir="$_fix_cuda_shim_dir"
+_fix_cuda_link_lib libnvidia-ptxjitcompiler.so.1 || true
+_fix_cuda_link_lib libnvidia-fatbinaryloader.so.1 || true
+_fix_cuda_link_lib libnvidia-allocator.so.1 || true
+
+if [[ -n "$_fix_cuda_libcuda_dir" || -n "$_fix_cuda_nvml_dir" ]]; then
+  _fix_cuda_prepend_path LD_LIBRARY_PATH "$_fix_cuda_shim_dir"
+  _fix_cuda_added_dirs+=("$_fix_cuda_shim_dir")
+fi
+
 if [[ -n "$_fix_cuda_libcuda_dir" ]]; then
-  export TRITON_LIBCUDA_PATH="$_fix_cuda_libcuda_dir"
+  export TRITON_LIBCUDA_PATH="$_fix_cuda_shim_dir"
 fi
 
 if [[ "${#_fix_cuda_added_dirs[@]}" -gt 0 ]]; then
-  echo "Added or confirmed NVIDIA library directories:"
+  echo "Added NVIDIA driver shim directory:"
   printf '  %s\n' "${_fix_cuda_added_dirs[@]}"
+  if [[ "${#_fix_cuda_linked_libs[@]}" -gt 0 ]]; then
+    echo "Linked host driver libraries:"
+    printf '  %s\n' "${_fix_cuda_linked_libs[@]}"
+  fi
 else
   echo "Could not find libcuda.so.1 or libnvidia-ml.so.1 in the common host locations."
   echo "Check the host driver install before retrying."
@@ -118,17 +197,9 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     done <<< "$_fix_cuda_gpu_names"
   fi
 
-  if echo "$_fix_cuda_gpu_names" | grep -Eq 'A100-SXM|H100|H800|A800|HGX'; then
-    if command -v systemctl >/dev/null 2>&1; then
-      _fix_cuda_fm_status="$(systemctl is-active nvidia-fabricmanager.service 2>/dev/null || true)"
-      if [[ "$_fix_cuda_fm_status" == "active" ]]; then
-        echo "nvidia-fabricmanager.service is active."
-      else
-        echo "Warning: nvidia-fabricmanager.service is not active."
-        echo "If CUDA still fails, start it with:"
-        echo "  sudo systemctl enable --now nvidia-fabricmanager.service"
-      fi
-    fi
+  if [[ "$_fix_cuda_gpu_names" =~ A100-SXM|H100|H800|A800|HGX ]]; then
+    echo "Note: Fabric Manager is mainly needed on HGX/NVSwitch-style systems."
+    echo "A missing nvidia-fabricmanager service is not automatically a problem on a single-GPU host."
   fi
 fi
 
@@ -163,7 +234,7 @@ fi
 echo "If torch.cuda.is_available() is still False, retry after:"
 echo "  1. reopening the Nix dev shell"
 echo "  2. sourcing this helper again"
-echo "  3. starting nvidia-fabricmanager on A100/HGX systems if needed"
+echo "  3. checking host driver libraries with: ls -l /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1"
 
 unset _fix_cuda_dir
 unset _fix_cuda_add_dir
@@ -172,7 +243,13 @@ unset _fix_cuda_gpu_names
 unset _fix_cuda_fm_status
 unset _fix_cuda_libcuda_dir
 unset _fix_cuda_nvml_dir
+unset _fix_cuda_linked_libs
+unset _fix_cuda_shim_dir
 unset _fix_cuda_candidate_dirs
 unset _fix_cuda_added_dirs
+unset -f _fix_cuda_find_lib
+unset -f _fix_cuda_realpath
+unset -f _fix_cuda_link_lib
+unset -f _fix_cuda_remove_path
 unset -f _fix_cuda_prepend_path
 unset -f _fix_cuda_print_header

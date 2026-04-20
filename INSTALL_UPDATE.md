@@ -394,11 +394,20 @@ ldconfig -p | grep -E 'libcuda\.so\.1|libnvidia-ml\.so\.1' || true
 
 On Ubuntu-like systems, a common fix is that `libcuda.so.1` exists in
 `/usr/lib/x86_64-linux-gnu`, but that directory is not visible enough inside
-the shell. In that case, retry with:
+the shell. Do not prepend broad host directories such as
+`/usr/lib/x86_64-linux-gnu` or `/lib/x86_64-linux-gnu` directly inside the Nix
+shell, because that can override the shell's glibc and produce errors such as
+`GLIBC_PRIVATE` symbol failures.
+
+Instead, expose only the NVIDIA driver libraries through a tiny shim
+directory:
 
 ```bash
-export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/nvidia/current:/usr/lib/nvidia-590:${LD_LIBRARY_PATH:-}
-export TRITON_LIBCUDA_PATH=/usr/lib/x86_64-linux-gnu
+mkdir -p /tmp/psi-host-cuda-libs
+ln -sfn /usr/lib/x86_64-linux-gnu/libcuda.so.1 /tmp/psi-host-cuda-libs/libcuda.so.1
+ln -sfn /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1 /tmp/psi-host-cuda-libs/libnvidia-ml.so.1
+export LD_LIBRARY_PATH=/tmp/psi-host-cuda-libs:${LD_LIBRARY_PATH:-}
+export TRITON_LIBCUDA_PATH=/tmp/psi-host-cuda-libs
 ```
 
 This repo also includes a helper that tries the common host-driver library
@@ -407,6 +416,17 @@ locations and reruns the sanity check for the current shell:
 ```bash
 source scripts/fix_cuda_env.sh
 ```
+
+If you already sourced an older helper or manually prepended a broad host
+library directory and then see errors like:
+
+```text
+grep: symbol lookup error: ... libc.so.6: undefined symbol ... GLIBC_PRIVATE
+python: error while loading shared libraries: ... invalid mode for dlopen()
+```
+
+the current shell is contaminated by host glibc. Exit that shell, reopen the
+Nix dev shell, and use only the shim-based fix above or the updated helper.
 
 Then re-test:
 
@@ -418,7 +438,7 @@ print("device_count   =", torch.cuda.device_count())
 PY
 ```
 
-If the host uses A100 SXM / HGX hardware, also check whether Fabric Manager is
+If the host uses HGX / NVSwitch hardware, also check whether Fabric Manager is
 running:
 
 ```bash
@@ -430,6 +450,9 @@ If it is inactive, start it and retry:
 ```bash
 sudo systemctl enable --now nvidia-fabricmanager.service
 ```
+
+A missing `nvidia-fabricmanager` unit is not automatically the blocker on a
+single-GPU host. It is mainly relevant on HGX / NVSwitch-style systems.
 
 Only proceed to `uv sync`, model serving, or training once
 `torch.cuda.is_available()` is `True`.
