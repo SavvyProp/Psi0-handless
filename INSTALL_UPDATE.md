@@ -353,6 +353,87 @@ Expected shape:
 If `nvcc --version` reports something else such as `11.5`, do not proceed with
 `uv sync` until you have entered the Nix shell correctly.
 
+If `nvidia-smi` works but PyTorch still reports no CUDA devices, for example:
+
+```text
+RuntimeError: Found no NVIDIA driver on your system
+```
+
+or:
+
+```bash
+python - <<'PY'
+import torch
+print(torch.cuda.is_available())
+print(torch.cuda.device_count())
+PY
+```
+
+prints `False` and `0`, then the problem is usually CUDA driver visibility
+inside the Python/Nix environment, not the repo itself.
+
+Check the current PyTorch and driver-library view:
+
+```bash
+python - <<'PY'
+import os, ctypes, ctypes.util, torch
+print("torch", torch.__version__)
+print("torch.version.cuda =", torch.version.cuda)
+print("LD_LIBRARY_PATH =", os.environ.get("LD_LIBRARY_PATH"))
+print("find_library(cuda) =", ctypes.util.find_library("cuda"))
+for lib in ["libcuda.so.1", "libnvidia-ml.so.1"]:
+    try:
+        ctypes.CDLL(lib)
+        print(lib, "OK")
+    except OSError as e:
+        print(lib, "FAIL", e)
+PY
+
+ldconfig -p | grep -E 'libcuda\.so\.1|libnvidia-ml\.so\.1' || true
+```
+
+On Ubuntu-like systems, a common fix is that `libcuda.so.1` exists in
+`/usr/lib/x86_64-linux-gnu`, but that directory is not visible enough inside
+the shell. In that case, retry with:
+
+```bash
+export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/nvidia/current:/usr/lib/nvidia-590:${LD_LIBRARY_PATH:-}
+export TRITON_LIBCUDA_PATH=/usr/lib/x86_64-linux-gnu
+```
+
+This repo also includes a helper that tries the common host-driver library
+locations and reruns the sanity check for the current shell:
+
+```bash
+source scripts/fix_cuda_env.sh
+```
+
+Then re-test:
+
+```bash
+python - <<'PY'
+import torch
+print("cuda_available =", torch.cuda.is_available())
+print("device_count   =", torch.cuda.device_count())
+PY
+```
+
+If the host uses A100 SXM / HGX hardware, also check whether Fabric Manager is
+running:
+
+```bash
+systemctl status nvidia-fabricmanager.service --no-pager
+```
+
+If it is inactive, start it and retry:
+
+```bash
+sudo systemctl enable --now nvidia-fabricmanager.service
+```
+
+Only proceed to `uv sync`, model serving, or training once
+`torch.cuda.is_available()` is `True`.
+
 If `uv sync` fails while extracting large CUDA wheels such as
 `nvidia-cudnn-cu12` with:
 
