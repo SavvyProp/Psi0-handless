@@ -77,6 +77,26 @@ Set up the $\Psi_0$ environment:
 
 > ℹ️ We manage the $\Psi_0$ environment and all the baselines through `uv` and they all share the same `src/` code.  See [Environment Management](baselines/README.md) for more details.
 
+Before running `uv sync`, make sure `third_party/SIMPLE` is populated
+recursively. The repo-level lockfile installs `simple[full]`, which includes
+editable packages from `third_party/SIMPLE/third_party/*` such as
+`third_party/SIMPLE/third_party/curobo`.
+
+```bash
+git submodule update --init --recursive
+```
+
+If you manually cloned SIMPLE into `third_party/SIMPLE` instead of using the
+repo submodule, initialize SIMPLE's own submodules too:
+
+```bash
+git -C third_party/SIMPLE submodule update --init --recursive
+```
+
+If `uv sync` fails with an error like
+`nvidia-curobo ... third_party/SIMPLE/third_party/curobo does not appear to be a Python project`,
+that directory was not checked out yet.
+
 ```
 uv venv .venv-psi --python 3.10
 source .venv-psi/bin/activate

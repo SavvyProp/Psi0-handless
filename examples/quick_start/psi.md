@@ -24,6 +24,17 @@ If your Git setup blocks local `file` transport for submodules, use:
 git -c protocol.file.allow=always submodule update --init --recursive
 ```
 
+If you manually cloned SIMPLE into `third_party/SIMPLE` instead of using the
+repo submodule, you still need to initialize SIMPLE's nested submodules before
+running `uv sync`:
+
+```bash
+git -C third_party/SIMPLE submodule update --init --recursive
+```
+
+If `uv sync` fails while building editable metadata for
+`third_party/SIMPLE/third_party/curobo`, this step was skipped.
+
 Pull Git LFS content inside SIMPLE:
 
 ```bash

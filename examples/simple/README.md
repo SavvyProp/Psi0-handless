@@ -6,6 +6,15 @@ git submodule update --init --recursive
 cd third_party/SIMPLE
 ```
 
+If you manually cloned SIMPLE into `third_party/SIMPLE`, also run:
+
+```bash
+git -C third_party/SIMPLE submodule update --init --recursive
+```
+
+Otherwise the repo-level `uv sync` can fail on editable SIMPLE dependencies
+such as `third_party/SIMPLE/third_party/curobo`.
+
 ## Install Dokcer version
 
 Setup environment variables
@@ -64,4 +73,3 @@ GPUs=1 docker compose run eval $task $policy \
     --data-dir=data/G1WholebodyBendPick-v0-psi0 \
     --num-episodes=10
 ```
-
