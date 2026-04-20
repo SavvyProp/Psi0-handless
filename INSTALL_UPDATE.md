@@ -353,6 +353,55 @@ Expected shape:
 If `nvcc --version` reports something else such as `11.5`, do not proceed with
 `uv sync` until you have entered the Nix shell correctly.
 
+If `uv sync` fails while extracting large CUDA wheels such as
+`nvidia-cudnn-cu12` with:
+
+```text
+No space left on device (os error 28)
+```
+
+then the target machine has run out of space in the filesystem backing
+`~/.cache/uv` (or the temporary directory used by `uv`). The full `psi +
+simple` environment is large, so this can happen even after the Nix shell is
+working correctly.
+
+Check available space:
+
+```bash
+df -h ~ ~/.cache /tmp
+du -sh ~/.cache/uv 2>/dev/null || true
+```
+
+If needed, clean only the incomplete `uv` temporary extracts and retry:
+
+```bash
+rm -rf ~/.cache/uv/.tmp*
+```
+
+If your home directory is small, point `uv` at a larger filesystem and rerun:
+
+```bash
+mkdir -p /path/with-space/.uv-cache
+
+UV_CACHE_DIR=/path/with-space/.uv-cache \
+GIT_LFS_SKIP_SMUDGE=1 \
+uv sync --all-groups --index-strategy unsafe-best-match --active
+```
+
+If `flash_attn` then fails with:
+
+```text
+ModuleNotFoundError: No module named 'setuptools'
+```
+
+that usually means the earlier `uv sync` did not finish, so the environment is
+only partially populated. First complete `uv sync` successfully. Then run:
+
+```bash
+uv pip install setuptools wheel
+uv pip install flash_attn==2.7.4.post1 --no-build-isolation
+```
+
 
 ## 9. Optional Baseline Environments
 
@@ -673,19 +722,126 @@ The public SIMPLE repo's flake may require an input named
 function 'outputs' called without required argument 'nixpkgs-unstable'
 ```
 
-then the root `flake.nix` in this fork needs to forward the top-level
-`nixpkgs` input to SIMPLE under that additional name.
+then the checked-out `third_party/SIMPLE/flake.nix` needs to declare that
+input name, and the root `flake.nix` in this fork should wire SIMPLE's
+stable and unstable package inputs separately.
 
 Expected root-flake snippet:
 
 ```nix
+nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+nixpkgsStable.url = "github:NixOS/nixpkgs/nixos-24.11";
+
 simple = {
   url = "path:./third_party/SIMPLE";
-  inputs.nixpkgs.follows = "nixpkgs";
+  inputs.nixpkgs.follows = "nixpkgsStable";
   inputs.nixpkgs-unstable.follows = "nixpkgs";
 };
 ```
 
-This repo already uses `github:NixOS/nixpkgs/nixos-unstable` for the top-level
-`nixpkgs` input, so following the same input for both names is the intended
-compatibility bridge.
+The top-level `outputs` function must also accept the additional input, for
+example:
+
+```nix
+outputs = { self, nixpkgs, simple, ... }:
+```
+
+Otherwise Nix will fail with:
+
+```text
+function 'outputs' called with unexpected argument 'nixpkgsStable'
+```
+
+Do not make `simple.inputs.nixpkgs` follow the root `nixpkgs` input here. The
+root shell in this fork uses `nixos-unstable`, but SIMPLE's flake currently
+expects its main `nixpkgs` input to remain on a branch that still exposes
+`pkgs.python310`.
+
+If you instead see both of these messages together:
+
+```text
+warning: input 'simple' has an override for a non-existent input 'nixpkgs-unstable'
+function 'outputs' called without required argument 'nixpkgs-unstable'
+```
+
+then the problem is slightly different: the checked-out
+`third_party/SIMPLE/flake.nix` is internally inconsistent. Its `outputs`
+function expects `nixpkgs-unstable`, but its `inputs` block does not actually
+declare that input name, so the root override cannot attach to it.
+
+In that case, patch `third_party/SIMPLE/flake.nix` on the target machine so
+its `inputs` block declares `nixpkgs-unstable`, for example:
+
+```nix
+inputs = {
+  nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+  nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # ... the rest of SIMPLE's inputs ...
+};
+```
+
+If you want a copy-paste shell command instead of editing by hand, this
+repo-local patch is the smallest change:
+
+```bash
+grep -q 'nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";' \
+  third_party/SIMPLE/flake.nix || \
+  sed -i '/nixpkgs.url = "github:NixOS\/nixpkgs\/nixos-24.11";/a\    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";' \
+  third_party/SIMPLE/flake.nix
+```
+
+Then rerun:
+
+```bash
+env -u LD_PRELOAD -u LD_LIBRARY_PATH \
+  nix --extra-experimental-features "nix-command flakes" flake lock
+
+env -u LD_PRELOAD -u LD_LIBRARY_PATH \
+  nix --extra-experimental-features "nix-command flakes" develop -c bash
+```
+
+The lockfile refresh matters here. If the root `flake.lock` still records the
+old SIMPLE input graph, Nix may continue to think `simple` only has a
+`nixpkgs` input and will keep printing:
+
+```text
+warning: input 'simple' has an override for a non-existent input 'nixpkgs-unstable'
+```
+
+You can inspect that case by checking whether the `simple` node in the root
+`flake.lock` only lists `nixpkgs` under `inputs`. If `flake lock` is not
+enough, recreate the root lockfile once:
+
+```bash
+mv flake.lock flake.lock.before-simple-input-fix
+
+env -u LD_PRELOAD -u LD_LIBRARY_PATH \
+  nix --extra-experimental-features "nix-command flakes" flake lock
+```
+
+Then retry `nix develop`.
+
+If the `nixpkgs-unstable` wiring error is fixed but `nix develop` then fails
+with:
+
+```text
+error: attribute 'python310' missing
+```
+
+that means the root flake is still forcing SIMPLE's main `nixpkgs` input onto a
+recent `nixos-unstable` revision. Upstream SIMPLE currently imports:
+
+```nix
+pkgs = import nixpkgs { ... };
+unstablePkgs = import nixpkgs-unstable { ... };
+pythonPkg = pkgs.python310;
+```
+
+and this fork's root Python environment is also pinned to Python 3.10. The
+fix is to keep SIMPLE's `nixpkgs` input on a stable branch that still exposes
+`python310` and only let SIMPLE's `nixpkgs-unstable` input follow the root
+unstable package set.
+
+If you prefer not to patch the vendored SIMPLE checkout manually, update
+`third_party/SIMPLE` to a commit where its `flake.nix` declares the same input
+names that its `outputs` function expects.

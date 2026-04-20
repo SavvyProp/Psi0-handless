@@ -4,9 +4,10 @@
   inputs = {
     self.submodules = true;
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgsStable.url = "github:NixOS/nixpkgs/nixos-24.11";
     simple = {
       url = "path:./third_party/SIMPLE";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixpkgs.follows = "nixpkgsStable";
       inputs.nixpkgs-unstable.follows = "nixpkgs";
     };
   };
@@ -15,6 +16,7 @@
     self,
     nixpkgs,
     simple,
+    ...
   }:
     let
       system = "x86_64-linux";
